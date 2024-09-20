@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"github.com/elastic/elastic-agent-autodiscover/kubernetes"
 	"github.com/elastic/elastic-agent-autodiscover/kubernetes/metadata"
 	"github.com/elastic/elastic-agent-autodiscover/utils"
@@ -17,10 +19,9 @@ import (
 	"github.com/elastic/elastic-agent-libs/mapstr"
 	"github.com/elastic/elastic-agent-libs/safemapstr"
 
-	k8s "k8s.io/client-go/kubernetes"
-
 	"github.com/elastic/elastic-agent/internal/pkg/agent/errors"
 	"github.com/elastic/elastic-agent/internal/pkg/composable"
+	k8s "k8s.io/client-go/kubernetes"
 )
 
 type pod struct {
@@ -104,11 +105,21 @@ func NewPodEventer(
 	// Deployment -> Replicaset -> Pod
 	// CronJob -> job -> Pod
 	if metaConf.Deployment {
-		replicaSetWatcher, err = kubernetes.NewNamedWatcher("resource_metadata_enricher_rs", client, &kubernetes.ReplicaSet{}, kubernetes.WatchOptions{
-			SyncTimeout:  cfg.SyncPeriod,
-			Namespace:    cfg.Namespace,
-			HonorReSyncs: true,
-		}, nil)
+		metadataClient, err := kubernetes.GetKubernetesMetadataClient(cfg.KubeConfig, cfg.KubeClientOptions)
+		if err != nil {
+			logger.Errorf("Error creating metadata client for %T due to error %+v", &kubernetes.Namespace{}, err)
+		}
+		// use a custom watcher here, so we can provide a transform function and limit the data we're storing
+		replicaSetWatcher, err = kubernetes.NewNamedMetadataWatcher(
+			"resource_metadata_enricher_rs",
+			client,
+			metadataClient,
+			schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "replicasets"},
+			kubernetes.WatchOptions{
+				SyncTimeout:  cfg.SyncPeriod,
+				Namespace:    cfg.Namespace,
+				HonorReSyncs: true,
+			}, nil, metadata.RemoveUnnecessaryReplicaSetData)
 		if err != nil {
 			logger.Errorf("Error creating watcher for %T due to error %+v", &kubernetes.Namespace{}, err)
 		}
